@@ -5,22 +5,47 @@ from tqdm import tqdm
 from collections import namedtuple
 
 
-class SGD_bias():
+def create_positives_dataset(user_item_csr, user_ids):
+    PositiveSample = namedtuple('PositiveSample', ('user_id', 'movie_id'))
+    D = []
+    for user_id in user_ids:
+        for movie_id in user_item_csr[user_id, :].indices:
+            D.append(PositiveSample(user_id, movie_id))
+    print(f'Dataset: {len(D)}')
+    return D   
+
+                
+class MatrixFactorization:
     
-    def __init__(self, rank=64, lr=1e-3, max_epochs=100, eps=1e-5, lambd=1e-5, seed=42):
+    def __init__(self, rank=64, max_epochs=100, eps=1e-5, lambd=1e-5, 
+                 lr=None, confidence=None, M=None, max_negatives=None, seed=42):
         self.rank = rank
-        self.lr = lr
         self.max_epochs = max_epochs
         self.eps = eps
         self.lambd = lambd
+        self.lr = lr
+        self.confidence = confidence
+        self.M = M
+        self.max_negatives = max_negatives
         np.random.seed(seed)
         
         
-    def initialize_weights(self, ratings):                
-        self.users = ratings['user_id'].unique() 
-        self.movies = ratings['movie_id'].unique()
-        print(f'Users: {len(self.users)} | Movies: {len(self.movies)} | Ratings: {len(ratings)}')
+    def initialize_weights(self, ratings=None, user_item_csr=None):     
         
+        if ratings is not None:
+            self.users = ratings['user_id'].unique() 
+            self.movies = ratings['movie_id'].unique()
+            print(f'Users: {len(self.users)} | Movies: {len(self.movies)} | Ratings: {len(ratings)}')
+        
+        elif user_item_csr is not None:
+            self.cx = sp.coo_matrix(user_item_csr)
+            self.users = np.unique(self.cx.row)
+            self.movies = np.unique(self.cx.col)
+            print(f'Users: {len(self.users)} | Movies: {len(self.movies)} | Ratings: {user_item_csr.getnnz()}')
+        
+        else:
+            raise Error
+            
         user_ids_size = np.max(self.users) + 1
         movie_ids_size = np.max(self.movies) + 1
         init_limit = 1 / np.sqrt(self.rank)
@@ -28,14 +53,24 @@ class SGD_bias():
         self.user_embeddings = np.random.uniform(0, init_limit, (user_ids_size, self.rank))
         self.movie_embeddings = np.random.uniform(0, init_limit, (movie_ids_size, self.rank))
         
-        self.user_biases = np.zeros(user_ids_size)
-        self.movie_biases = np.zeros(movie_ids_size)
-        self.gen_bias = np.mean(ratings['rating'])
-            
+        if ratings is not None:
+            self.user_biases = np.zeros(user_ids_size)
+            self.movie_biases = np.zeros(movie_ids_size)
+            self.gen_bias = np.mean(ratings['rating'])
+    
+
+"""
+Models
+"""
+class SGD_bias(MatrixFactorization):
+    
+    def __init__(self, rank=64, lr=1e-3, max_epochs=100, eps=1e-5, lambd=1e-5):
+        super().__init__(rank=rank, lr=lr, max_epochs=max_epochs, eps=eps, lambd=lambd)
+        
     
     def fit(self, ratings):
         ratings_index = np.array(ratings.index)      
-        self.initialize_weights(ratings)
+        super().initialize_weights(ratings=ratings)
                 
         for epoch in range(self.max_epochs):
 
@@ -71,34 +106,12 @@ class SGD_bias():
             if mse < self.eps:
                 break     
 
-
-
         
-class ALS():
+class ALS(MatrixFactorization):
     
-    def __init__(self, rank=64, max_epochs=100, eps=1e-5, lambd=1e-5, confidence=10, seed=42): ##conf = lr
-        self.rank = rank
-        self.max_epochs = max_epochs
-        self.eps = eps
-        self.lambd = lambd
-        self.confidence = confidence
-        np.random.seed(seed)
+    def __init__(self, rank=64, max_epochs=100, eps=1e-5, lambd=1e-5, confidence=10):
+        super().__init__(rank=rank, max_epochs=max_epochs, eps=eps, lambd=lambd, confidence=confidence)
         
-        
-    def initialize_weights(self, user_item_csr):
-        
-        self.cx = sp.coo_matrix(user_item_csr)
-        self.users = np.unique(self.cx.row)
-        self.movies = np.unique(self.cx.col)
-        print(f'Users: {len(self.users)} | Movies: {len(self.movies)} | Ratings: {user_item_csr.getnnz()}')
-        
-        user_ids_size = np.max(self.users) + 1
-        movie_ids_size = np.max(self.movies) + 1
-        init_limit = 1 / np.sqrt(self.rank)
-
-        self.user_embeddings = np.random.uniform(0, init_limit, (user_ids_size, self.rank))
-        self.movie_embeddings = np.random.uniform(0, init_limit, (movie_ids_size, self.rank))
-               
     
     def update_user_embs(self, user_item_csr):  
         movie_dot_movie = (self.movie_embeddings * self.movie_embeddings).sum(axis=1, keepdims=True)       
@@ -133,7 +146,7 @@ class ALS():
             
             
     def fit(self, user_item_csr):     
-        self.initialize_weights(user_item_csr)
+        super().initialize_weights(user_item_csr=user_item_csr)
         for epoch in range(self.max_epochs):            
             self.update_user_embs(user_item_csr) if epoch % 2 == 0 else self.update_movie_embs(user_item_csr)
             mse = self.compute_loss()
@@ -143,41 +156,10 @@ class ALS():
                        
 
 
-class BPR():
+class BPR(MatrixFactorization):
     
-    def __init__(self, rank=64, lr=1e-3, max_epochs=100, eps=1e-5, lambd=1e-5, seed=42):
-        self.rank = rank
-        self.lr = lr
-        self.max_epochs = max_epochs
-        self.eps = eps
-        self.lambd = lambd
-        np.random.seed(seed)
-    
-    
-    @staticmethod
-    def _create_positives_dataset(user_item_csr, user_ids):
-        PositiveSample = namedtuple('PositiveSample', ('user_id', 'movie_id'))
-        
-        D = []
-        for user_id in user_ids:
-            for movie_id in user_item_csr[user_id, :].indices:
-                D.append(PositiveSample(user_id, movie_id))
-        return D
-    
-    
-    def initialize_weights(self, user_item_csr):
-        
-        self.cx = sp.coo_matrix(user_item_csr)
-        self.users = np.unique(self.cx.row)
-        self.movies = np.unique(self.cx.col)
-        print(f'Users: {len(self.users)} | Movies: {len(self.movies)} | Ratings: {user_item_csr.getnnz()}')
-        
-        user_ids_size = np.max(self.users) + 1
-        movie_ids_size = np.max(self.movies) + 1
-        init_limit = 1 / np.sqrt(self.rank)
-
-        self.user_embeddings = np.random.uniform(0, init_limit, (user_ids_size, self.rank))
-        self.movie_embeddings = np.random.uniform(0, init_limit, (movie_ids_size, self.rank))
+    def __init__(self, rank=64, lr=1e-3, max_epochs=100, eps=1e-5, lambd=1e-5):
+        super().__init__(rank=rank, lr=lr, max_epochs=max_epochs, eps=eps, lambd=lambd)
 
         
     def update_weights(self, user_id, prefers_id, over_id):
@@ -207,12 +189,8 @@ class BPR():
         
         
     def fit(self, user_item_csr):
-        self.initialize_weights(user_item_csr)
-        
-        ### create dataset
-        D = BPR._create_positives_dataset(user_item_csr, self.users)
-        print(f'Dataset: {len(D)}')
-        
+        super().initialize_weights(user_item_csr=user_item_csr)
+        D = create_positives_dataset(user_item_csr, self.users)
         prev_logloss = None
                 
         for epoch in range(self.max_epochs):
@@ -239,45 +217,12 @@ class BPR():
             else:
                 prev_logloss = logloss
 
-        
-        
-        
-class WARP():
+                
+class WARP(MatrixFactorization):
     
-    def __init__(self, rank=64, lr=1e-3, max_epochs=100, eps=1e-5, lambd=1e-5, M=1, max_negatives=10, seed=42):
-        self.rank = rank
-        self.lr = lr
-        self.max_epochs = max_epochs
-        self.eps = eps
-        self.lambd = lambd
-        self.M = M
-        self.max_negatives = max_negatives
-        np.random.seed(seed)
-    
-    
-    @staticmethod
-    def _create_positives_dataset(user_item_csr, user_ids):
-        D = []
-        for user_id in user_ids:
-            for movie_id in user_item_csr[user_id, :].indices:
-                D.append(PositiveSample(user_id, movie_id))
-        return D
-
-    
-    def initialize_weights(self, user_item_csr):
-        
-        self.cx = sp.coo_matrix(user_item_csr)
-        self.users = np.unique(self.cx.row)
-        self.movies = np.unique(self.cx.col)
-        print(f'Users: {len(self.users)} | Movies: {len(self.movies)} | Ratings: {user_item_csr.getnnz()}')
-        
-        user_ids_size = np.max(self.users) + 1
-        movie_ids_size = np.max(self.movies) + 1
-        init_limit = 1 / np.sqrt(self.rank)
-
-        self.user_embeddings = np.random.uniform(0, init_limit, (user_ids_size, self.rank))
-        self.movie_embeddings = np.random.uniform(0, init_limit, (movie_ids_size, self.rank))
-        
+    def __init__(self, rank=64, lr=1e-3, max_epochs=100, eps=1e-5, lambd=1e-5, M=1, max_negatives=10):
+        super().__init__(rank=rank, lr=lr, max_epochs=max_epochs, eps=eps, lambd=lambd, M=M, max_negatives=max_negatives)
+            
     
     def update_weights(self, n, score_prefers, score_over, user_id, prefers_id, over_id):
         
@@ -302,14 +247,11 @@ class WARP():
     
         
     def fit(self, user_item_csr):
-        self.initialize_weights(user_item_csr)
-        
-        D = BPR._create_positives_dataset(user_item_csr, self.users)
-        print(f'Dataset: {len(D)}')
-        
+        super().initialize_weights(user_item_csr=user_item_csr)
+        D = create_positives_dataset(user_item_csr, self.users)
         prev_loss = None
+        
         for epoch in range(self.max_epochs):
-            # Shuffle indexes to simulate uniform sampling for WARP.
             np.random.shuffle(D)
             loss_sum = 0
             loss_count = 0
@@ -327,7 +269,7 @@ class WARP():
                     
                     loss = 0.0
                     if self.M + score_over - score_prefers > 0:
-                        loss = self.update_weights(n, score_prefers, score_over, user_id, prefers_id, over_id)                       
+                        loss = self.update_weights(n, score_prefers, score_over, user_id, prefers_id, over_id)
                     loss_sum += loss                        
                     loss_count += 1
                     if loss:
