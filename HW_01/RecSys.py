@@ -5,7 +5,7 @@ from scipy.spatial.distance import cosine as cosine_distance
 class RecSys:
     
     def __init__(self, users, movies, user_embeddings, movie_embeddings, 
-                 movie_biases, user_biases, gen_bias):   
+                 movie_biases, user_biases, mu_bias):   
         
         self.users = users
         self.movies = movies       
@@ -15,7 +15,7 @@ class RecSys:
         
         self.movie_biases = movie_biases
         self.user_biases = user_biases
-        self.gen_bias = gen_bias  
+        self.mu_bias = mu_bias  
     
     
     def similar_items(self, movie_id, n=10):
@@ -50,7 +50,7 @@ class RecSys:
                 rating += self.user_biases[user_id]
             if self.movie_biases is not None:
                 rating += self.movie_biases[movie_id]
-            if self.gen_bias is not None:
+            if self.mu_bias is not None:
                 rating += self.gen_bias
                 
             predicted_ratings.append((movie_id, rating))
@@ -72,10 +72,10 @@ def build_recsys(ratings, trained_model):
     try:
         movie_biases = trained_model.movie_biases
         user_biases = trained_model.user_biases
-        gen_bias = trained_model.gen_bias
+        mu_bias = trained_model.gen_bias
     except:
         movie_biases = None
         user_biases = None
-        gen_bias = None
+        mu_bias = None
     
-    return RecSys(users, movies, user_embeddings, movie_embeddings, movie_biases, user_biases, gen_bias)
+    return RecSys(users, movies, user_embeddings, movie_embeddings, movie_biases, user_biases, mu_bias)
