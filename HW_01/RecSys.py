@@ -51,7 +51,7 @@ class RecSys:
             if self.movie_biases is not None:
                 rating += self.movie_biases[movie_id]
             if self.mu_bias is not None:
-                rating += self.gen_bias
+                rating += self.mu_bias
                 
             predicted_ratings.append((movie_id, rating))
             
@@ -72,7 +72,7 @@ def build_recsys(ratings, trained_model):
     try:
         movie_biases = trained_model.movie_biases
         user_biases = trained_model.user_biases
-        mu_bias = trained_model.gen_bias
+        mu_bias = trained_model.mu_bias
     except:
         movie_biases = None
         user_biases = None
