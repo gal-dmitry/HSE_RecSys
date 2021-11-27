@@ -2,3 +2,5 @@
 __pycache__/
 kkbox-music-recommendation-challenge
 full_extended_train_df.pkl
+full_extended_train_df_proto4.pkl
+full_extended_train_df_proto5.pkl

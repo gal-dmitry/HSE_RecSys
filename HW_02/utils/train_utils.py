@@ -4,6 +4,7 @@ from tqdm import tqdm
 from typing import Generator
 from catboost import CatBoostRanker, Pool
 from sklearn.model_selection import GroupKFold
+from sklearn.metrics import roc_auc_score
 
 
 
@@ -30,7 +31,11 @@ class TrainDataset():
             train_dataset = TrainDataset(self._df.iloc[train_index])
             test_dataset = TrainDataset(self._df.iloc[test_index])
             yield train_dataset, test_dataset
-
+    
+    def reduce_by_members(self, size):
+        self._df = self._df.groupby("msno").head(size).reset_index(drop=True)
+        return self
+    
     @property
     def queries(self):
         return self._df.msno.cat.codes.to_numpy()
@@ -45,59 +50,25 @@ class TrainDataset():
             return self._df.iloc[indices]
         return self._df
 
-    def reduce_by_members(self, size):
-        self._df = self._df.groupby("msno").head(size).reset_index(drop=True)
-        return self
-
 
 """
 METRCIS
 """
+def AUC(queries, scores, relevance):
+    
+    assert len(queries) == len(scores) == len(relevance)
+    query_labels = np.unique(queries)
+    aucs = []
 
-"""NDCG"""
-def DCG(y_pred, y_true):
-    assert len(y_pred) == len(y_true), "Size error"
-    n = len(y_pred)
-    idx = np.argsort(-y_pred)
-    return sum(y_true[idx] / np.log2(1 + np.arange(1, n + 1)))
-
-
-def IDCG(y_pred, y_true):
-    assert len(y_pred) == len(y_true), "Size error"
-    n = len(y_pred)
-    rev_y_true = -np.sort(-y_true)
-    return sum(rev_y_true / np.log2(1 + np.arange(1, n + 1)))
-
-
-def NDCG(X, Y_pred, Y_true):
-    assert len(X) == len(Y_pred) == len(Y_true), "Size error"
-    X_unique = np.unique(X)
-    _NDCG = []
-
-    for X_idx in X_unique:
-        idx = X == X_idx 
-        _IDCG = IDCG(Y_pred[idx], Y_true[idx])
-        if _IDCG > 0:
-            _DCG= DCG(Y_pred[idx], Y_true[idx])
-            _NDCG.append(_DCG/_IDCG)
-
-    return np.array(_NDCG).mean()
-
-
-"""ROC_AUC"""
-def AUC(X, Y_pred, Y_true):
-    assert len(X) == len(Y_pred) == len(Y_true), "Size error"
-    X_unique = np.unique(X)
-    _AUC = []
-
-    for X_idx in X_unique:
+    for query_label in query_labels:
         try:
-            idx = X == X_idx
-            _AUC.append(roc_auc_score(Y_true[idx], Y_pred[idx]))
+            query_mask = queries == query_label
+            query_auc = roc_auc_score(relevance[query_mask], scores[query_mask])
+            aucs.append(query_auc)
         except:
             pass
 
-    return np.array(_AUC).mean()
+    return np.array(aucs).mean()
 
 
 
@@ -111,12 +82,11 @@ class CatBoostModel():
                  iterations, 
                  task_type, 
                  random_state):
-        
+
         self._model = CatBoostRanker(loss_function=loss_function, 
                                      iterations=iterations,
                                      task_type=task_type, 
                                      random_state=random_state)
-
         
     def fit(self, dataset):
         pool = CatBoostModel.to_pool(dataset)
@@ -147,17 +117,14 @@ class CatBoostModel():
     
     def cv_scores(self, dataset, n_splits):
         
-        metrics = {"NDCG": [], "ROC_AUC": []}
+        metrics = {"ROC_AUC": []}
 
-#         for train_dataset, test_dataset in tqdm(dataset.split(n_splits)):
         for train_dataset, test_dataset in dataset.split(n_splits):
             self.fit(train_dataset)
             scores = self.predict(test_dataset)
-            metrics["NDCG"].append(NDCG(test_dataset.queries, scores, test_dataset.labels))
             metrics["ROC_AUC"].append(AUC(test_dataset.queries, scores, test_dataset.labels))
 
         return metrics
-    
     
     
     
