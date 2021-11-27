@@ -45,7 +45,10 @@ class TrainDataset():
             return self._df.iloc[indices]
         return self._df
 
-    
+    def reduce_by_members(self, size):
+        self._df = self._df.groupby("msno").head(size).reset_index(drop=True)
+        return self
+
 
 """
 METRCIS
