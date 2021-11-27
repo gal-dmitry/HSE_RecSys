@@ -1,6 +1,5 @@
-"""
-METRICS
-"""
+import numpy as np
+
 
 """NDCG"""
 def DCG(y_pred, y_true):

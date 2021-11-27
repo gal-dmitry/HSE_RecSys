@@ -1,7 +1,7 @@
 import csv
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score
+from tqdm import tqdm
 
 
 """
@@ -108,7 +108,7 @@ def fill_nan(df, name):
 
 def fill_nan_list(df, name_list):
     df = df.copy()
-    for name in name_list:
+    for name in tqdm(name_list):
         df = fill_nan(df, name)
     return df
 
@@ -183,8 +183,17 @@ def to_year(isrc):
 def process_isrc(df):
     df = df.copy()
     df["isrc_country"] = to_country_once(df.isrc)
+    df["isrc_country"] = df["isrc_country"].astype("category")
     df["isrc_year"] = df["isrc"].apply(to_year).astype("category")
     return df.drop(columns="isrc")
+
+
+"""Convert"""
+def to_category(df, columns):
+    df = df.copy()
+    for column in columns:
+        df[column] = df[column].astype("category")
+    return df
 
 
 
@@ -205,20 +214,33 @@ def process_songs(song_df):
 
 def process_song_extra_info(song_extra_info_df):    
     post_song_extra_info_df = process_isrc(song_extra_info_df)
-    return post_song_extra_info_df
+    return post_song_extra_info_df.drop(columns="name")
+    
+    
+def process_train(train_df):   
+    post_train_df = fill_nan_list(train_df, ["source_system_tab", "source_screen_name", "source_type"])
+    return post_train_df
     
     
 def merge_songs(post_song_df, post_song_extra_info_df): 
     extended_song_df = post_song_df.merge(post_song_extra_info_df, on="song_id", how="left")
-    return extended_song_df.drop(columns="name")
+    for col in extended_song_df.columns:
+        if extended_song_df[col].dtype == "category" and extended_song_df[col].isnull().any():
+            if "FILL_NAN" in extended_song_df[col].cat.categories:
+                extended_song_df[col] = extended_song_df[col].fillna(value="FILL_NAN")
+            else:
+                extended_song_df[col] = extended_song_df[col].cat.add_categories("FILL_NAN").fillna(value="FILL_NAN")
+                
+    return extended_song_df
     
 
-def process_train(train_df, post_members_df, extended_song_df):    
-    extended_train_df = train_df.merge(post_members_df, on="msno", how="left")
+def merge_train(post_train_df, post_members_df, extended_song_df):    
+    '''merge'''
+    extended_train_df = post_train_df.merge(post_members_df, on="msno", how="left")
     extended_train_df = extended_train_df.merge(extended_song_df, on="song_id", how="left")
-    return extended_train_df
-
-
-
+    '''nan, cat'''
+    extended_train_df = to_category(extended_train_df, ["msno", "song_id"])
+    
+    return extended_train_df.sort_values(by="msno")
 
 
