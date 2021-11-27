@@ -1,5 +1,6 @@
 .ipynb_checkpoints
 __pycache__/
+catboost_info
 kkbox-music-recommendation-challenge
 full_extended_train_df.pkl
 full_extended_train_df_proto4.pkl
