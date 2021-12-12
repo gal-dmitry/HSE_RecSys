@@ -90,15 +90,23 @@ def age2group(age):
 
 
 def age2cat(df):
-    df = df.copy()
     df["age_group"] = df["bd"].apply(age2group).astype("category")
     return df.drop(columns="bd")
+
+
+def datetime2int(df):
+    df["registration_init_year"] = df["registration_init_time"].apply(lambda x: x.year).astype("int")
+    df = df.drop(columns="registration_init_time")
+        
+    df["expiration_date_year"] = df["expiration_date"].apply(lambda x: x.year).astype("int")
+    df = df.drop(columns="expiration_date")
+        
+    return df
 
 
 """FILL_NAN: Categorical"""
 def fill_nan(df, name):
     assert df[name].dtype == 'category', "TypeError"
-    df = df.copy()
     if name == "language":    
         df[name] = df[name].fillna(value="-1.0")
     else:    
@@ -107,14 +115,12 @@ def fill_nan(df, name):
 
 
 def fill_nan_list(df, name_list):
-    df = df.copy()
     for name in tqdm(name_list):
         df = fill_nan(df, name)
     return df
 
         
 def fill_nan_all(df):
-    df = df.copy()
     for name in df.columns:
         if df[name].isnull().values.any():  
             df = fill_nan(df, name)
@@ -129,13 +135,11 @@ def count_pipe(_str):
 
 
 def count_union(df, name):
-    df = df.copy()
     df[f"{name}_count"] = df[name].apply(count_pipe).astype("int")
     return df
     
 
 def count_union_list(df, name_list):
-    df = df.copy()
     for name in name_list:
         df = count_union(df, name)
     return df
@@ -153,7 +157,6 @@ def get_countries_set(path='wikipedia-iso-country-codes.csv'):
 
 def to_country_once(df_isrc):
     countries = get_countries_set()
-#     print(countries)
     
     lst = []
     for isrc in df_isrc:
@@ -181,16 +184,14 @@ def to_year(isrc):
 
     
 def process_isrc(df):
-    df = df.copy()
     df["isrc_country"] = to_country_once(df.isrc)
     df["isrc_country"] = df["isrc_country"].astype("category")
-    df["isrc_year"] = df["isrc"].apply(to_year).astype("category")
+    df["isrc_year"] = df["isrc"].apply(to_year).astype("int")
     return df.drop(columns="isrc")
 
 
 """Convert"""
 def to_category(df, columns):
-    df = df.copy()
     for column in columns:
         df[column] = df[column].astype("category")
     return df
@@ -203,6 +204,7 @@ DATASETS
 def process_members(members_df):
     post_members_df = fill_nan(members_df, "gender")
     post_members_df = age2cat(post_members_df)
+    post_members_df = datetime2int(post_members_df)
     return post_members_df
 
 
@@ -224,15 +226,11 @@ def process_train(train_df):
     
 def merge_songs(post_song_df, post_song_extra_info_df): 
     extended_song_df = post_song_df.merge(post_song_extra_info_df, on="song_id", how="left")
-    for col in extended_song_df.columns:
-        if extended_song_df[col].dtype == "category" and extended_song_df[col].isnull().any():
-            if "FILL_NAN" in extended_song_df[col].cat.categories:
-                extended_song_df[col] = extended_song_df[col].fillna(value="FILL_NAN")
-            else:
-                extended_song_df[col] = extended_song_df[col].cat.add_categories("FILL_NAN").fillna(value="FILL_NAN")
-                
+    extended_song_df["isrc_year"] = extended_song_df["isrc_year"].fillna(value=-1)
+    extended_song_df["isrc_country"] = extended_song_df["isrc_country"].cat.add_categories("FILL_NAN").fillna(value="FILL_NAN")
+    assert not extended_song_df.isnull().values.any(), "NaN is in dataframe"
     return extended_song_df
-    
+
 
 def merge_train(post_train_df, post_members_df, extended_song_df):    
     '''merge'''
@@ -242,5 +240,89 @@ def merge_train(post_train_df, post_members_df, extended_song_df):
     extended_train_df = to_category(extended_train_df, ["msno", "song_id"])
     
     return extended_train_df.sort_values(by="msno")
+
+
+def get_final_df(df):
+    final_df = df[~df.song_length.isnull()]
+    
+    for col in ["genre_ids_count", "artist_name_count", "composer_count", "lyricist_count", "isrc_year", "song_length"]:
+        _series = final_df[col].copy().astype("int")
+        final_df.loc[:, col] = _series
+        
+    assert not final_df.isnull().values.any(), "NaN in dataframe"
+
+    return final_df
+
+
+"""
+DATA restoring
+"""
+def restore_csv(main_path, dct_path):
+    
+    dct_df = pd.read_csv(dct_path)
+    dct = {}
+    for i, row in dct_df.iterrows():
+        dct[row["index"]] = row["dtypes"]
+    
+    restored = pd.read_csv(main_path, dtype=dct)
+    return restored
+
+
+
+"""
+PIPELINE
+"""
+def get_preprocessed_dataset(csv_folder_path="kkbox-music-recommendation-challenge/csv_folder",
+                             members_path="members.csv",
+                             song_extra_info_path="song_extra_info.csv",
+                             songs_path="songs.csv",
+                             train_path="train.csv"):
+    
+    '''members'''
+    print(f"process members...")
+    members_df = load_members(f"{csv_folder_path}/{members_path}")
+    post_members_df = process_members(members_df)
+    del members_df
+
+    '''songs'''
+    print(f"process songs...")
+    song_df = load_songs(f"{csv_folder_path}/{songs_path}")
+    post_song_df = process_songs(song_df)
+    del song_df
+
+    '''songs extra info'''
+    print(f"process songs extra info...")
+    song_extra_info_df = load_song_extra_info(f"{csv_folder_path}/{song_extra_info_path}")
+    post_song_extra_info_df = process_song_extra_info(song_extra_info_df)
+    del song_extra_info_df
+    
+    '''merged songs'''
+    print(f"merge songs...")
+    extended_song_df = merge_songs(post_song_df, post_song_extra_info_df)
+    del post_song_df
+    del post_song_extra_info_df
+
+    '''train'''
+    print(f"process train...")
+    train_df = load_train(f"{csv_folder_path}/{train_path}")
+    post_train_df = process_train(train_df)
+    del train_df
+
+    '''extended train'''
+    print(f"merge train...")
+    extended_train_df = merge_train(post_train_df, post_members_df, extended_song_df)
+    del post_train_df
+    del post_members_df
+    del extended_song_df
+    
+    '''final'''
+    print(f"get final dataset...")
+    full_extended_train_df = get_final_df(extended_train_df)
+    del extended_train_df
+
+    return full_extended_train_df
+
+
+
 
 
