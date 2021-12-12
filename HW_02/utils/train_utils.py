@@ -154,8 +154,10 @@ class EmbeddingModel:
     
     def __init__(self, 
                  embedding_dim=100, 
-                 random_state=42):
+                 random_state=42,
+                 min_count=5):
         
+        self.min_count = min_count
         self._random_state = random_state
             
         self._embedding_dim = embedding_dim
@@ -200,8 +202,7 @@ class EmbeddingModel:
         print("Fit items...")        
         self._word2vec = Word2Vec(vector_size=self._embedding_dim, 
                                   window=5,
-#                                   min_count=5,
-                                  min_count=1,
+                                  min_count=self.min_count,
                                   seed=self._random_state)
         
         sentences = self.get_sentences(df)
@@ -258,7 +259,8 @@ class StackModel:
                  iterations=150, 
                  task_type="CPU", 
                  random_state=42,
-                 embedding_dim=100):
+                 embedding_dim=100,
+                 min_count=5):
         
         self._cat_model = CatBoostModel(loss_function=loss_function, 
                                          iterations=iterations,
@@ -266,7 +268,8 @@ class StackModel:
                                          random_state=random_state)
                                              
         self._emb_model = EmbeddingModel(embedding_dim=embedding_dim,
-                                           random_state=random_state)
+                                         random_state=random_state,
+                                         min_count=min_count)
                     
             
     def fit(self, dataset):
@@ -288,13 +291,12 @@ class StackModel:
 """
 SHAPLEY VALUES
 """
-def prepare_data(train_dataset_sm):
+def prepare_data(train_dataset_sm, split=1000):
 
     train_dataset_sm_sort = train_dataset_sm.sort_by("msno")
     indices = np.random.permutation(len(train_dataset_sm_sort))
     
-#     train_indices, test_indices = train_test_split(indices, test_size=1_000)
-    train_indices, test_indices = train_test_split(indices, test_size=0.2)
+    train_indices, test_indices = train_test_split(indices, test_size=split)
     train_indices = sorted(train_indices)
     test_indices = sorted(test_indices)
 
@@ -326,7 +328,8 @@ class ShapValues:
                  iterations=150, 
                  task_type="CPU", 
                  random_state=42,
-                 embedding_dim=100):       
+                 embedding_dim=100,
+                 min_count=5):       
         
         self.cat_model =  CatBoostRanker(loss_function=loss_function, 
                                         iterations=iterations,
@@ -334,7 +337,8 @@ class ShapValues:
                                         random_state=random_state)
                                              
         self.emb_model = EmbeddingModel(embedding_dim=embedding_dim,
-                                        random_state=random_state)        
+                                        random_state=random_state,
+                                        min_count=min_count)        
                     
 
     def emb_similarity(self, X_train, X_test):
@@ -361,7 +365,7 @@ class ShapValues:
         return shap_values[:, :-1]
     
     
-    def fit(self, train_dataset_sm_sort):
+    def fit(self, train_dataset_sm_sort, split=1000):
         
         X_train, X_test = prepare_data(train_dataset_sm_sort)
         X_train_df, X_test_df = self.emb_similarity(X_train, X_test)
