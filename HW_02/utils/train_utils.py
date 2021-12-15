@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from typing import Generator
+from collections import defaultdict
 
 import shap
 from catboost import CatBoostRanker, Pool
@@ -38,6 +38,7 @@ class TrainDataset:
             test_dataset = TrainDataset(self._df.iloc[test_index])
             yield train_dataset, test_dataset
     
+        
     def _add(self, name, values):
         self._df[name] = values
 
@@ -64,12 +65,6 @@ class TrainDataset:
     def labels(self):
         return self._df.target.to_numpy()
 
-    @property
-    def pandas_df(self, indices=None):
-        if indices is not None:
-            return self._df.iloc[indices]
-        return self._df
-
     
     
 """
@@ -92,8 +87,9 @@ def AUC_per_query(queries, scores, relevance):
     return np.array(aucs).mean()
 
 
-def get_metric(model, dataset, n_splits):
 
+def get_metric(model, dataset, n_splits):
+    
     metrics = pd.DataFrame(columns=["AUC_per_query"], 
                            index=[f"split: {i+1}" for i in range(n_splits)])
                      
@@ -126,10 +122,10 @@ class CatBoostModel:
     
     
     def to_pool(self, dataset):
-        cat_features = dataset.pandas_df.select_dtypes(include=["category"]).columns.to_numpy()
-        data = dataset.pandas_df.drop("target", axis=1)
-        label = dataset.pandas_df.target.to_numpy()
-        group_id = dataset.pandas_df.msno.cat.codes.to_numpy()
+        cat_features = dataset._df.select_dtypes(include=["category"]).columns.to_numpy()
+        data = dataset._df.drop("target", axis=1)
+        label = dataset._df.target.to_numpy()
+        group_id = dataset._df.msno.cat.codes.to_numpy()
         pool = Pool(data=data, 
                     label=label, 
                     group_id=group_id,
@@ -148,9 +144,9 @@ class CatBoostModel:
         pred = self._model.predict(pool)
         return pred
     
+
     
-    
-class EmbeddingModel:
+class EmbeddingModel_v1:
     
     def __init__(self, 
                  embedding_dim=100, 
@@ -170,23 +166,34 @@ class EmbeddingModel:
         
     def has_item(self, item):
         return item in self._word2vec.wv
-
+#         return item in self._word2vec.wv.index_to_key
     
     def has_user(self, user):
         return user in self._users
     
     
+    def get_mask(self, users, items):
+        return np.array([self.has_user(user) and self.has_item(item) for user, item in zip(users, items)])
+        
+        
     def get_sentences(self, df):
-        sessions = dict(df.groupby("msno").song_id.apply(list))
+        sessions = {}
+        for msno in df.msno.unique():
+            song = df[df.msno == msno].song_id.to_list()
+            sessions[msno] = song
+            
         return [values for values in sessions.values() if len(values) > 0]
     
     
     def get_positives(self, df):
-        return dict(df[df.target == 1].groupby("msno").song_id.apply(list))
-        
+        positives = {}
     
-    def get_mask(self, users, items):
-        return np.array([self.has_user(user) and self.has_item(item) for user, item in zip(users, items)])
+        pos_df = df[df.target == 1]
+        for msno in pos_df.msno.unique():
+            song = pos_df[pos_df.msno == msno].song_id.to_list()
+            positives[msno] = song
+        
+        return positives
         
         
     def get_item_emb(self, items):
@@ -194,8 +201,18 @@ class EmbeddingModel:
 
     
     def get_user_emb(self, users):
+#         print(users)
         users_encoded = self._user_encoder.transform(users)
+#         print(users_encoded)
         return self._user_emb[users_encoded]
+
+    
+    def get_user_emb(self, users):
+#         print(users)
+        users_encoded = self._user_encoder.transform(users)
+#         print(users_encoded)
+        return self._user_emb[users_encoded]
+    
     
     
     def fit_items(self, df):
@@ -206,6 +223,7 @@ class EmbeddingModel:
                                   seed=self._random_state)
         
         sentences = self.get_sentences(df)
+#         print(sentences)
         self._word2vec.build_vocab(sentences)
         self._word2vec.train(sentences, total_examples=self._word2vec.corpus_count, epochs=10)
 
@@ -213,7 +231,8 @@ class EmbeddingModel:
     def fit_users(self, df):
 
         positives = self.get_positives(df)
-
+#         print(f"positives: {positives}")
+        
         self._user_encoder.fit(list(positives.keys()))
         self._users = set(self._user_encoder.classes_)
         self._user_emb = np.zeros((len(self._users), self._embedding_dim))
@@ -226,30 +245,100 @@ class EmbeddingModel:
             user_pos = [pos for pos in user_pos if self.has_item(pos)]
             
             if len(user_pos) > 0:
+#                 print(f"len(user_pos)")
                 user_encoded = self._user_encoder.transform([user])[0]
                 self._user_emb[user_encoded] = self.get_item_emb(user_pos).mean(axis=0)
 
-
+    
     def fit(self, dataset):
         self.fit_items(dataset._df)
         self.fit_users(dataset._df)
+        return self
         
-    
+        
     def predict(self, dataset):
         
         users = dataset._df["msno"].to_numpy()
+#         print(f"users: {users}")
         items = dataset._df["song_id"].to_numpy()
-
+#         print(f"items: {items}")
+        
         mask = self.get_mask(users, items)
-
-        user_emb_s = self.get_user_emb(users[mask])
-        item_emb_s = self.get_item_emb(items[mask])
+        not_mask = [not a for a in mask]
+        
+        if True in mask:
+            user_emb_s = self.get_user_emb(users[mask])
+            item_emb_s = self.get_item_emb(items[mask])
+        else:
+            return np.zeros(len(dataset))
         
         scores = np.zeros(len(dataset))
-        scores[mask] = np.sum(user_emb_s * item_emb_s, axis=1)
-
+        scores[mask] = np.sum(user_emb_s * item_emb_s, axis=1)        
         return scores
 
+
+    
+class EmbeddingModel_v2:
+    
+    def __init__(self):        
+        self._word2vec = Word2Vec(min_count=2,
+                                  window=10,
+                                  vector_size=30,
+                                  negative=18,
+                                  sg=1)
+
+    
+    def fit(self, dataset):
+        self.userembed = {}
+        self.song_sentences = defaultdict(list)
+        
+        df = dataset._df
+        
+        total=df[df['target'] == 1].shape[0]
+        for i, row in tqdm(df[df['target'] == 1].iterrows(), total=total):
+            key = f"{row['msno']}"
+            value = f"{row['artist_name']}"
+            self.song_sentences[key].append(value)
+            
+        sentences = list(self.song_sentences.values())
+        
+        self._word2vec.build_vocab(sentences)
+        self._word2vec.train(sentences, total_examples=self._word2vec.corpus_count, epochs=10)
+                
+        
+    def get_similars(self, item):
+        self._word2vec.init_sims(replace=True)
+        return self._word2vec.wv.most_similar(positive=item)
+
+    
+    def get_user_emb(self, row):
+        user_name = f"{row['msno']}"
+        if user_name in self.userembed:
+            return self.userembed[user_name]
+
+        embedding = np.zeros(30,)
+        for song in self.song_sentences[user_name]:
+            if song in self._word2vec.wv.key_to_index:
+                embedding += self._word2vec.wv.get_vector(song)
+        self.userembed[user_name] = embedding
+        return embedding
+
+    
+    def get_item_emb(self, row):
+        song_name = f"{row['artist_name']}"
+        if song_name in self._word2vec.wv.key_to_index:
+            return self._word2vec.wv.get_vector(song_name)
+        else:
+            return np.zeros(30,)
+    
+    
+    def predict(self, dataset):
+        df = dataset._df
+        user_emb = np.vstack(df.apply(self.get_user_emb, axis=1))
+        item_emb = np.vstack(df.apply(self.get_item_emb, axis=1))
+        scores = (item_emb * user_emb).mean(axis=1)
+        return scores
+    
     
     
 class StackModel:
@@ -267,9 +356,9 @@ class StackModel:
                                          task_type=task_type, 
                                          random_state=random_state)
                                              
-        self._emb_model = EmbeddingModel(embedding_dim=embedding_dim,
-                                         random_state=random_state,
-                                         min_count=min_count)
+        self._emb_model = EmbeddingModel_v1(embedding_dim=embedding_dim,
+                                            random_state=random_state,
+                                            min_count=min_count)
                     
             
     def fit(self, dataset):
@@ -286,6 +375,7 @@ class StackModel:
         pred = self._cat_model.predict(dataset)
         dataset._drop("emb_score")
         return pred
+    
     
     
 """
@@ -321,7 +411,44 @@ def to_pool(df):
 
 
 
-class ShapValues:
+class ShapValuesCatBoost:
+    
+    def __init__(self,      
+                 loss_function="YetiRank", 
+                 iterations=150, 
+                 task_type="CPU", 
+                 random_state=42,
+                 min_count=5):       
+        
+        self.cat_model =  CatBoostRanker(loss_function=loss_function, 
+                                        iterations=iterations,
+                                        task_type=task_type, 
+                                        random_state=random_state)
+                            
+    
+    def cat_shap(self, pooled_X_train, pooled_X_test):
+        self.cat_model.fit(pooled_X_train)
+        shap_values = self.cat_model.get_feature_importance(pooled_X_test, 
+                                                            type="ShapValues", 
+                                                            shap_calc_type="Exact")    
+        return shap_values[:, :-1]
+    
+    
+    def fit(self, train_dataset_sm_sort, split=1000):
+        X_train, X_test = prepare_data(train_dataset_sm_sort, split=split) 
+        X_train_df = X_train._df.reset_index(drop=True)
+        X_test_df = X_test._df.reset_index(drop=True)
+        pooled_X_train, pooled_X_test = to_pool(X_train_df), to_pool(X_test_df)
+        self.shap_values = self.cat_shap(pooled_X_train, pooled_X_test)
+        self.X_test_df = X_test_df.drop("target", axis=1)
+    
+    
+    def show_shap_values(self):
+        shap.summary_plot(self.shap_values, self.X_test_df)
+
+
+        
+class ShapValuesStackModel:
     
     def __init__(self,      
                  loss_function="YetiRank", 
@@ -336,9 +463,9 @@ class ShapValues:
                                         task_type=task_type, 
                                         random_state=random_state)
                                              
-        self.emb_model = EmbeddingModel(embedding_dim=embedding_dim,
-                                        random_state=random_state,
-                                        min_count=min_count)        
+        self.emb_model = EmbeddingModel_v1(embedding_dim=embedding_dim,
+                                           random_state=random_state,
+                                           min_count=min_count)        
                     
 
     def emb_similarity(self, X_train, X_test):
@@ -369,6 +496,7 @@ class ShapValues:
         
         X_train, X_test = prepare_data(train_dataset_sm_sort)
         X_train_df, X_test_df = self.emb_similarity(X_train, X_test)
+        
         pooled_X_train, pooled_X_test = to_pool(X_train_df), to_pool(X_test_df)
     
         self.shap_values = self.cat_shap(pooled_X_train, pooled_X_test)
@@ -377,7 +505,5 @@ class ShapValues:
     
     def show_shap_values(self):
         shap.summary_plot(self.shap_values, self.X_test_df)
-    
-    
-    
+
     
